@@ -1,0 +1,110 @@
+name: 🛡️ Warrior Task CI/CD
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 🔬 Test & Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: 🔧 Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: |
+          6.0.x
+          8.0.x
+    
+    - name: 📦 Restore dependencies
+      run: dotnet restore
+      working-directory: ./src
+    
+    - name: 🏗️ Build solution
+      run: dotnet build --no-restore --configuration Release
+      working-directory: ./src
+    
+    - name: 🧪 Run unit tests
+      run: dotnet test --no-build --configuration Release --verbosity normal --logger "trx"
+      working-directory: ./src
+      continue-on-error: false
+    
+    - name: 📊 Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results
+        path: src/**/TestResults/*.trx
+        retention-days: 7
+    
+    - name: 📝 Check code coverage
+      run: |
+        dotnet tool install -g dotnet-reportgenerator-globaltool
+        dotnet test --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+      working-directory: ./src
+      continue-on-error: true
+    
+    - name: 📧 Send webhook on success
+      if: success()
+      run: |
+        PR_NUMBER=$(jq --raw-output .number "$GITHUB_EVENT_PATH" 2>/dev/null || echo "")
+        REPO_NAME=$(jq --raw-output .repository.name "$GITHUB_EVENT_PATH" 2>/dev/null || echo "Warrior")
+        
+        curl -X POST "${{ secrets.WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -H "X-GitHub-Event: check_run" \
+          -d "{
+            \"event\": \"ci_passed\",
+            \"repository\": {\"name\": \"$REPO_NAME\"},
+            \"check_run\": {
+              \"conclusion\": \"success\",
+              \"status\": \"completed\",
+              \"pull_requests\": [{\"number\": $PR_NUMBER}]
+            }
+          }"
+    
+    - name: 📧 Send webhook on failure
+      if: failure()
+      run: |
+        PR_NUMBER=$(jq --raw-output .number "$GITHUB_EVENT_PATH" 2>/dev/null || echo "")
+        REPO_NAME=$(jq --raw-output .repository.name "$GITHUB_EVENT_PATH" 2>/dev/null || echo "Warrior")
+        
+        curl -X POST "${{ secrets.WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -H "X-GitHub-Event: check_run" \
+          -d "{
+            \"event\": \"ci_failed\",
+            \"repository\": {\"name\": \"$REPO_NAME\"},
+            \"check_run\": {
+              \"conclusion\": \"failure\",
+              \"status\": \"completed\",
+              \"pull_requests\": [{\"number\": $PR_NUMBER}]
+            }
+          }"
+
+  lint:
+    name: 🔍 Code Style Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🔧 Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+    
+    - name: 🔍 Run analyzers
+      run: dotnet format --verify-no-changes --severity info
+      working-directory: ./src
+      continue-on-error: true
